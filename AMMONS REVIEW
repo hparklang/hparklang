@@ -1,0 +1,158 @@
+if (!require("BiocManager", quietly = TRUE))
+  install.packages("BiocManager")
+install.packages("dplyr")
+install.packages("Seurat")
+install.packages("SeuratObject")
+install.packages("sp")
+install.packages("tidyverse")
+BiocManager::install("EnhancedVolcano", force = TRUE)
+BiocManager::install("dittoSeq")
+BiocManager::install("glmGamPoi")
+BiocManager::install("presto")
+install.packages("readxl")
+install.packages("ggplot2")
+install.packages("ggrepel")
+install.packages("bslib")
+install.packages("scales")
+install.packages("ggpmisc")
+install.packages("pals")
+
+library(usethis)
+library(pals)
+library(presto)
+library(devtools)
+library(Rcpp)
+library(VISION)
+library(harmony)
+library(Seurat)
+library(usethis)
+library(SeuratObject)
+library(harmony)
+library(dplyr)
+library(ggplot2)
+library(tidyverse)
+library(purrr)
+library(ggpmisc)
+library(dittoSeq)
+library(BiocManager)
+library(EnhancedVolcano)
+library(readxl)
+library(ggrepel)
+library(bslib)
+library(RColorBrewer)
+library(SeuratData)
+
+
+setwd("~/Documents/scRNA data/GSE225599")
+
+#read 10x Ammons et al. 
+D1<-Read10X('D1')
+D2<-Read10X('D2')
+D3<-Read10X('D3')
+D4<-Read10X('D4')
+D5<-Read10X('D5')
+D6<-Read10X('D6')
+D7<-Read10X('D7')
+
+#convert to seurat object
+D1<-CreateSeuratObject(D1, project = 'D1')
+D2<-CreateSeuratObject(D2, project = 'D2')
+D3<-CreateSeuratObject(D3, project = 'D3')
+D4<-CreateSeuratObject(D4, project = 'D4')
+D5<-CreateSeuratObject(D5, project = 'D5')
+D6<-CreateSeuratObject(D6, project = 'D6')
+D7<-CreateSeuratObject(D7, project = 'D7')
+
+bulk <- merge(x=D1, y=c(D2,D3,D4,D5,D6,D7))
+View(bulk)
+
+# standard filters 
+bulk[["percent.mt"]] <- PercentageFeatureSet(bulk, pattern = "^MT-")
+bulk <- subset(bulk, subset = nFeature_RNA > 200 & nFeature_RNA < 4500 & percent.mt < 5)
+VlnPlot(bulk, features = c("nFeature_RNA", "nCount_RNA", "percent.mt"), ncol = 3)
+
+#preprocessing: normalize, scale, find features
+bulk <- bulk %>%
+  NormalizeData(verbose = T) %>%
+  FindVariableFeatures(selection.method = "vst", nfeatures = 2000, verbose = T) %>% 
+  ScaleData(verbose = T) %>% 
+  RunPCA(npcs = 20, verbose = T)
+
+#correct batch effect using harmony
+bulk <- bulk %>% 
+  RunHarmony("orig.ident", plot_convergence = TRUE)
+DimPlot(bulk, reduction = "harmony", split.by = 'orig.ident')
+
+#UMAP, TSNE
+bulk<-RunUMAP(bulk, reduction = 'harmony', dims=1:20)
+bulk<-RunTSNE(bulk, reduction = 'harmony', dims=1:20, verbose=T)
+DimPlot(bulk, reduction = 'umap')
+DimPlot(bulk, reduction = 'tsne')
+FeaturePlot(bulk, features = c('CD5','CD4','CD44'))
+
+#find seurat clusters
+bulk <- FindNeighbors(bulk, dims = 1:20, verbose = T, reduction = 'harmony')
+bulk <- FindClusters(bulk, resolution=c(0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1))
+DimPlot(bulk, reduction = 'umap', group.by = 'RNA_snn_res.0.7')
+
+FeaturePlot(bulk, features = c('CD5','CD4','CD3E','TBX21','CXCR3','ITGAM','CD8A')) 
+
+# CD4 ONLY 
+CD4A <- subset(x = bulk, subset = CD4 > 0)
+
+#standard normalization, finding variable features, scaling, and PCA
+CD4A <- CD4A %>%
+  NormalizeData(verbose = T) %>%
+  FindVariableFeatures(nfeatures = 2000, verbose = T) %>% 
+  ScaleData(verbose = T) %>% 
+  RunPCA(npcs = 20, features = VariableFeatures(object = CD4A), verbose = T)
+
+#find seurat clusters for CD4 only
+CD4A <- FindNeighbors(CD4A, dims = 1:15, verbose = T, reduction = 'harmony')
+CD4A <- FindClusters(CD4A, resolution=c(0.6), cluster.name = "harmony_clusters")
+DimPlot(CD4A, reduction = 'umap', group.by = 'RNA_snn_res.0.2', label = TRUE, label.box = T)
+
+#Join Layers 
+CD4A[["RNA"]] <- JoinLayers(CD4A[["RNA"]], layers = "cells", new = "CD4A")
+
+#Integrate Layers
+CD4A <-IntegrateLayers(CD4A, method = HarmonyIntegration, normalization.method = "SCT", orig.reduction = "umap", new.reduction = "integrated_harmony", verbose = TRUE)
+
+#correct batch effect CD4
+CD4A <- CD4A %>% 
+  RunHarmony("orig.ident", plot_convergence = TRUE)
+DimPlot(CD4A, reduction = "harmony", split.by = 'orig.ident')
+
+#UMAP, TSNE
+CD4A<-RunUMAP(CD4A, reduction = 'harmony', dims=1:10)
+CD4A<-RunTSNE(CD4A, reduction = 'harmony', dims=1:10, verbose=T)
+DimPlot(CD4A, reduction = 'umap', label = TRUE, label.box = T)
+DimPlot(JoinLayers(CD4A), reduction = 'umap', label = TRUE)
+
+
+#CD4 myeloid
+FeaturePlot(CD4A, reduction = 'umap', features = c('CD4'),cols = c("gray",'navyblue'), pt.size = 1, order = T, ncol=1)
+
+FeaturePlot(CD4A, reduction = 'umap', features = c('MAFB','SGK1','ITGAM','S100A12'),cols = c("gray",'navyblue'), pt.size = 0.5, order = T, ncol=2)
+
+#CD5 vs CD3E
+FeaturePlot(CD4A, features = c("CD5","CD3E"), reduction = 'umap', blend = T, cols = c("gray90","goldenrod4",'darkred'), ncol = 5, pt.size = 1, min.cutoff = 0, max.cutoff = 10, order = T)
+
+# of cells = 10428 for CD4+
+num_cells <- ncol(CD4A)
+
+# of cells = 30842 for bulk
+num_cells <- ncol(bulk)
+
+#Percent CD5 vs CD3E
+p3 <- VlnPlot(object = CD4A, features =c("CD3E"), pt.size = 1.1)
+table(p3$data$CD3E>0)
+
+p5 <- VlnPlot(object = CD4A, features =c("CD5"), pt.size = 1.1)
+table(p5$data$CD5>0)
+
+#Total number of cells in CD4A
+table(CD4A$orig.ident)
+
+
+
